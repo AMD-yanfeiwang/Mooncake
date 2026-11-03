@@ -1858,6 +1858,12 @@ void MooncakeCommunicator::applyGroupState(
 
         const auto& member = view.members[global_rank];
         if (member.endpoint.has_value()) {
+            // The peer re-registered its buffers; drop its stale descriptor.
+            if (global_rank != meta_->globalRank &&
+                member.endpoint->endpoint_epoch !=
+                    meta_->segmentInfos[local_rank].endpoint_epoch) {
+                context_.link_manager.syncPeerSegment(global_rank);
+            }
             meta_->segmentInfos[local_rank] = *member.endpoint;
         }
     }

@@ -64,6 +64,8 @@ class LinkManager {
         GlobalRank peer) const;
 
     void refreshPeerSegment(GlobalRank peer);
+    // Refetch the peer's cached Transfer Engine segment descriptor.
+    void syncPeerSegment(GlobalRank peer);
 
     void publishLinkUp(GlobalRank peer, TransferMetadata::SegmentID target_id,
                        uint64_t target_rank_epoch);

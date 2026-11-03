@@ -229,7 +229,12 @@ void MooncakeWorker::startWorker() {
                     }
                     batchIDs[i] =
                         group->engine->allocateBatchID(entries.size());
-                    group->engine->submitTransfer(batchIDs[i], entries);
+                    auto submit_status =
+                        group->engine->submitTransfer(batchIDs[i], entries);
+                    LOG_IF(ERROR, !submit_status.ok())
+                        << "Rank " << group->globalRank
+                        << " [DATA] submitTransfer failed: "
+                        << submit_status.ToString();
                     submitted_task_sequence_[i].store(
                         submit_sequence, std::memory_order_release);
                     activeTime[i] = clock::now();
@@ -325,7 +330,12 @@ void MooncakeWorker::startWorker() {
                     }
                     batchIDs[i] =
                         group->engine->allocateBatchID(entries.size());
-                    group->engine->submitTransfer(batchIDs[i], entries);
+                    auto submit_status =
+                        group->engine->submitTransfer(batchIDs[i], entries);
+                    LOG_IF(ERROR, !submit_status.ok())
+                        << "Rank " << group->globalRank
+                        << " [SIGNAL] submitTransfer failed: "
+                        << submit_status.ToString();
                     activeTime[i] = clock::now();
                     task_status[i].store(SIGNALED_1, std::memory_order_release);
                 } else if (task_status[i].load(std::memory_order_acquire) ==

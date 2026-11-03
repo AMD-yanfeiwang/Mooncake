@@ -280,6 +280,16 @@ void LinkManager::refreshPeerSegment(GlobalRank peer) {
     read_state_[peer].version.fetch_add(1, std::memory_order_release);
 }
 
+void LinkManager::syncPeerSegment(GlobalRank peer) {
+    if (peer == rank_ || !rankInRange(peer)) return;
+    std::string server_name;
+    {
+        std::lock_guard<std::mutex> lock(peers_mutex_);
+        server_name = peers_[peer].server_name;
+    }
+    if (!server_name.empty()) engine_->syncSegmentCache(server_name);
+}
+
 void LinkManager::publishLinkUp(GlobalRank peer,
                                 TransferMetadata::SegmentID target_id,
                                 uint64_t target_rank_epoch) {
