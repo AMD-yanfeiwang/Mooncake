@@ -838,12 +838,20 @@ int TransferEngineImpl::unregisterLocalMemory(void* addr,
                                               bool update_metadata) {
     // Best-effort: try every transport so one failure can't leave the region
     // registered on the others; mirrors unregisterLocalMemoryBatch (#2869).
+    // A transport may not hold the region (e.g. hip skips host memory), so
+    // ERR_ADDRESS_NOT_REGISTERED is fine once another transport removed it.
     int first_error = 0;
+    bool removed = false;
     for (auto& transport : multi_transports_->listTransports()) {
         int ret = transport->unregisterLocalMemory(addr, update_metadata);
-        if (ret && !first_error) first_error = ret;
+        if (ret == 0) {
+            removed = true;
+        } else if (ret != ERR_ADDRESS_NOT_REGISTERED && !first_error) {
+            first_error = ret;
+        }
     }
     if (first_error) return first_error;
+    if (!removed) return ERR_ADDRESS_NOT_REGISTERED;
 
     std::unique_lock<std::shared_mutex> lock(mutex_);
     eraseMemoryRegionLocked(addr);
@@ -1039,12 +1047,19 @@ int TransferEngineImpl::registerLocalMemoryBatch(
 
 int TransferEngineImpl::unregisterLocalMemoryBatch(
     const std::vector<void*>& addr_list) {
+    // Tolerate ERR_ADDRESS_NOT_REGISTERED, as in unregisterLocalMemory().
     int first_error = 0;
+    bool removed = false;
     for (auto transport : multi_transports_->listTransports()) {
         int ret = transport->unregisterLocalMemoryBatch(addr_list);
-        if (ret && !first_error) first_error = ret;
+        if (ret == 0) {
+            removed = true;
+        } else if (ret != ERR_ADDRESS_NOT_REGISTERED && !first_error) {
+            first_error = ret;
+        }
     }
     if (first_error) return first_error;
+    if (!removed) return ERR_ADDRESS_NOT_REGISTERED;
 
     std::unique_lock<std::shared_mutex> lock(mutex_);
     for (auto& addr : addr_list) {

@@ -964,28 +964,38 @@ Status MultiTransport::selectTransport(const TransferRequest& entry,
         // without requiring the operator to set MC_DISABLE_HIP.
         const bool local_ipc_reachable = isLocalIpcReachableTarget(
             target_segment_desc->name, local_server_name_);
-        std::string chosen;
-        int chosen_priority = -1;
-        for (const auto& buffer : target_segment_desc->buffers) {
-            // CXL buffers locate via offset + cxl_base_addr; all other
-            // protocols use the absolute virtual address in buffer.addr.
-            uint64_t start =
-                (buffer.protocol == "cxl")
-                    ? buffer.offset + target_segment_desc->cxl_base_addr
-                    : buffer.addr;
-            if (entry.target_offset >= start &&
-                entry.target_offset < start + buffer.length) {
-                if ((buffer.protocol == "hip" || buffer.protocol == "musa" ||
-                     buffer.protocol == "shm") &&
-                    !local_ipc_reachable) {
-                    continue;
-                }
-                int priority = protocol_priority(buffer.protocol);
-                if (priority > chosen_priority) {
-                    chosen = buffer.protocol;
-                    chosen_priority = priority;
+        auto choose = [&](const TransferMetadata::SegmentDesc& desc) {
+            std::string best;
+            int best_priority = -1;
+            for (const auto& buffer : desc.buffers) {
+                // CXL buffers locate via offset + cxl_base_addr; all other
+                // protocols use the absolute virtual address in buffer.addr.
+                uint64_t start = (buffer.protocol == "cxl")
+                                     ? buffer.offset + desc.cxl_base_addr
+                                     : buffer.addr;
+                if (entry.target_offset >= start &&
+                    entry.target_offset < start + buffer.length) {
+                    if ((buffer.protocol == "hip" ||
+                         buffer.protocol == "musa" ||
+                         buffer.protocol == "shm") &&
+                        !local_ipc_reachable) {
+                        continue;
+                    }
+                    int priority = protocol_priority(buffer.protocol);
+                    if (priority > best_priority) {
+                        best = buffer.protocol;
+                        best_priority = priority;
+                    }
                 }
             }
+            return best;
+        };
+        std::string chosen = choose(*target_segment_desc);
+        if (chosen.empty()) {
+            // The cached descriptor may predate this buffer; refetch once.
+            auto refreshed =
+                metadata_->getSegmentDescByID(entry.target_id, true);
+            if (refreshed) chosen = choose(*refreshed);
         }
         if (chosen.empty()) {
             return Status::InvalidArgument(
