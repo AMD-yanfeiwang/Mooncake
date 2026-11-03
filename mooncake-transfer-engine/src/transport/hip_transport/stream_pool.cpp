@@ -16,13 +16,35 @@
 
 #include <glog/logging.h>
 
+#include <algorithm>
+
 namespace mooncake {
 
-StreamPool::StreamPool(int num_streams_per_device)
-    : num_streams_per_device_(num_streams_per_device) {
+StreamPool::StreamPool(int num_streams_per_device, int priority)
+    : num_streams_per_device_(num_streams_per_device), priority_(priority) {
     if (num_streams_per_device_ == 0) {
         num_streams_per_device_ = 1;
     }
+}
+
+bool StreamPool::configure(int num_streams_per_device, int priority) {
+    std::lock_guard<std::mutex> lock(mutex_);
+    if (!streams_.empty()) {
+        return false;
+    }
+    num_streams_per_device_ = std::max(num_streams_per_device, 1);
+    priority_ = priority;
+    return true;
+}
+
+int StreamPool::numStreamsPerDevice() {
+    std::lock_guard<std::mutex> lock(mutex_);
+    return num_streams_per_device_;
+}
+
+int StreamPool::priority() {
+    std::lock_guard<std::mutex> lock(mutex_);
+    return priority_;
 }
 
 StreamPool::~StreamPool() {
@@ -71,7 +93,8 @@ bool StreamPool::initializeStreamsForDevice(int device_id) {
 
     for (int i = 0; i < num_streams_per_device_; ++i) {
         hipStream_t stream;
-        err = hipStreamCreateWithFlags(&stream, hipStreamNonBlocking);
+        err = hipStreamCreateWithPriority(&stream, hipStreamNonBlocking,
+                                          priority_);
         if (err != hipSuccess) {
             LOG(ERROR) << "StreamPool: Failed to create stream for device "
                        << device_id << ": " << hipGetErrorString(err);

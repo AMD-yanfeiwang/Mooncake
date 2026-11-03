@@ -38,6 +38,11 @@ class HipTransport : public Transport {
     Status getTransferStatus(BatchID batch_id, size_t task_id,
                              TransferStatus& status) override;
 
+    // Set the copy-stream count and priority; fails once a copy was issued.
+    bool configureCopyStreams(int num_streams, int priority);
+    int numCopyStreams() { return stream_pool_.numStreamsPerDevice(); }
+    int copyStreamPriority() { return stream_pool_.priority(); }
+
     static void* allocatePinnedLocalMemory(size_t length);
 
     static void freePinnedLocalMemory(void* addr);
@@ -68,6 +73,8 @@ class HipTransport : public Transport {
     struct OpenedShmEntry {
         void* shm_addr;
         uint64_t length;
+        // Handle the mapping was opened from.
+        std::string shm_name;
     };
 
     struct PendingTransfer {

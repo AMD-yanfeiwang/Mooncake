@@ -36,6 +36,7 @@ namespace mooncake {
 // Pool configuration constants
 // These can be overridden via environment variables:
 // - MC_HIP_NUM_STREAMS: number of HIP streams per device
+// - MC_HIP_STREAM_PRIORITY: low|normal|high priority of those streams
 // - MC_HIP_NUM_EVENTS: number of HIP events per device
 constexpr int kDefaultNumStreams = 64;
 constexpr int kDefaultNumEvents = 64;
@@ -325,6 +326,22 @@ static int getNumStreams() {
     return kDefaultNumStreams;
 }
 
+static int getStreamPriority() {
+    const char* env = getenv("MC_HIP_STREAM_PRIORITY");
+    if (env == nullptr || strcmp(env, "normal") == 0) return 0;
+    int least = 0, greatest = 0;
+    if (hipDeviceGetStreamPriorityRange(&least, &greatest) != hipSuccess) {
+        LOG(WARNING) << "HipTransport: cannot query stream priority range, "
+                        "using normal priority";
+        return 0;
+    }
+    if (strcmp(env, "low") == 0) return least;
+    if (strcmp(env, "high") == 0) return greatest;
+    LOG(WARNING) << "Invalid MC_HIP_STREAM_PRIORITY value " << env
+                 << ", using normal priority";
+    return 0;
+}
+
 static int getNumEvents() {
     const char* env = getenv("MC_HIP_NUM_EVENTS");
     if (env) {
@@ -394,7 +411,7 @@ static bool supportFabricMem() {
 
 HipTransport::HipTransport()
     : use_fabric_mem_(supportFabricMem()),
-      stream_pool_(getNumStreams()),
+      stream_pool_(getNumStreams(), getStreamPriority()),
       event_pool_(getNumEvents()) {
     // Enable P2P access for IPC mode
     if (!use_fabric_mem_) {
@@ -406,6 +423,10 @@ HipTransport::HipTransport()
 
         setupP2PAccess(num_devices);
     }
+}
+
+bool HipTransport::configureCopyStreams(int num_streams, int priority) {
+    return stream_pool_.configure(num_streams, priority);
 }
 
 HipTransport::~HipTransport() {
@@ -461,7 +482,20 @@ Status HipTransport::startAsyncTransfer(const TransferRequest& request,
 
     HipDeviceGuard device_guard;
 
+    // Create the slice first so that any failure below is reported as FAILED.
+    task.total_bytes = request.length;
+    Slice* slice = getSliceCache().allocate();
+    slice->source_addr = (char*)request.source;
+    slice->length = request.length;
+    slice->opcode = request.opcode;
+    slice->task = &task;
+    slice->target_id = request.target_id;
+    slice->status = Slice::PENDING;
+    task.slice_list.push_back(slice);
+    __sync_fetch_and_add(&task.slice_count, 1);
+
     if (setDeviceContext(request.source, device_id) != 0) {
+        slice->markFailed();
         return Status::InvalidArgument("Failed to set device context");
     }
 
@@ -470,24 +504,12 @@ Status HipTransport::startAsyncTransfer(const TransferRequest& request,
     if (request.target_id != LOCAL_SEGMENT_ID) {
         int rc = relocateSharedMemoryAddress(dest_addr, request.length,
                                              request.target_id);
-        if (rc) return Status::Memory("device memory not registered");
+        if (rc) {
+            slice->markFailed();
+            return Status::Memory("device memory not registered");
+        }
     }
-
-    task.total_bytes = request.length;
-
-    // Allocate and configure slice
-    Slice* slice = getSliceCache().allocate();
-    slice->source_addr = (char*)request.source;
     slice->local.dest_addr = (char*)dest_addr;
-    slice->length = request.length;
-    slice->opcode = request.opcode;
-    slice->task = &task;
-    slice->target_id = request.target_id;
-    slice->status = Slice::PENDING;
-
-    task.slice_list.push_back(slice);
-
-    __sync_fetch_and_add(&task.slice_count, 1);
 
     // Get event and stream from pools
     hipEvent_t event = event_pool_.getEvent(device_id);
@@ -575,11 +597,10 @@ Status HipTransport::submitTransfer(
         PendingTransfer pending;
         Status status = startAsyncTransfer(request, task, pending);
         if (!status.ok()) {
-            // Clean up any pending transfers we've already created
-            for (auto& pt : pending_transfers) {
-                event_pool_.putEvent(pt.event, pt.device_id);
-            }
-            return status;
+            // The slice is marked failed; keep submitting the rest.
+            LOG(WARNING) << "HipTransport: request to segment "
+                         << request.target_id << " failed: " << status.ToString();
+            continue;
         }
         pending_transfers.push_back(pending);
     }
@@ -641,11 +662,10 @@ Status HipTransport::submitTransferTask(
         PendingTransfer pending;
         Status status = startAsyncTransfer(request, task, pending);
         if (!status.ok()) {
-            // Clean up any pending transfers we've already created
-            for (auto& pt : pending_transfers) {
-                event_pool_.putEvent(pt.event, pt.device_id);
-            }
-            return status;
+            // The slice is marked failed; keep submitting the rest.
+            LOG(WARNING) << "HipTransport: request to segment "
+                         << request.target_id << " failed: " << status.ToString();
+            continue;
         }
         pending_transfers.push_back(pending);
     }
@@ -766,12 +786,13 @@ int HipTransport::relocateSharedMemoryAddress(uint64_t& dest_addr,
     for (auto& entry : desc->buffers) {
         if (!entry.shm_name.empty() && entry.addr <= dest_addr &&
             dest_addr + length <= entry.addr + entry.length) {
+            const auto key = std::make_pair(target_id, entry.addr);
             // Check if already remapped (shared lock)
             remap_lock_.lockShared();
-            if (remap_entries_.count(std::make_pair(target_id, entry.addr))) {
-                auto shm_addr =
-                    remap_entries_[std::make_pair(target_id, entry.addr)]
-                        .shm_addr;
+            auto cached = remap_entries_.find(key);
+            if (cached != remap_entries_.end() &&
+                cached->second.shm_name == entry.shm_name) {
+                auto shm_addr = cached->second.shm_addr;
                 remap_lock_.unlockShared();
                 dest_addr = dest_addr - entry.addr + ((uint64_t)shm_addr);
                 return 0;
@@ -779,7 +800,18 @@ int HipTransport::relocateSharedMemoryAddress(uint64_t& dest_addr,
             remap_lock_.unlockShared();
 
             RWSpinlock::WriteGuard lock_guard(remap_lock_);
-            if (!remap_entries_.count(std::make_pair(target_id, entry.addr))) {
+            cached = remap_entries_.find(key);
+            if (cached != remap_entries_.end() &&
+                cached->second.shm_name != entry.shm_name) {
+                // The peer re-registered this address; drop the old mapping.
+                if (use_fabric_mem_) {
+                    freePinnedLocalMemory(cached->second.shm_addr);
+                } else {
+                    (void)hipIpcCloseMemHandle(cached->second.shm_addr);
+                }
+                remap_entries_.erase(cached);
+            }
+            if (!remap_entries_.count(key)) {
                 std::vector<unsigned char> output_buffer;
                 deserializeBinaryData(entry.shm_name, output_buffer);
 
@@ -805,13 +837,12 @@ int HipTransport::relocateSharedMemoryAddress(uint64_t& dest_addr,
                 OpenedShmEntry shm_entry;
                 shm_entry.shm_addr = shm_addr;
                 shm_entry.length = entry.length;
-                remap_entries_[std::make_pair(target_id, entry.addr)] =
-                    shm_entry;
+                shm_entry.shm_name = entry.shm_name;
+                remap_entries_[key] = shm_entry;
             }
 
             // Calculate relocated address
-            auto shm_addr =
-                remap_entries_[std::make_pair(target_id, entry.addr)].shm_addr;
+            auto shm_addr = remap_entries_[key].shm_addr;
             dest_addr = dest_addr - entry.addr + ((uint64_t)shm_addr);
             return 0;
         }

@@ -26,7 +26,7 @@ namespace mooncake {
 // StreamPool manages a pool of HIP streams per device for async operations
 class StreamPool {
    public:
-    explicit StreamPool(int num_streams_per_device);
+    explicit StreamPool(int num_streams_per_device, int priority = 0);
     ~StreamPool();
 
     // Disable copy (to prevent double-free of HIP resources)
@@ -40,10 +40,17 @@ class StreamPool {
     // Get next stream for a device in round-robin fashion
     hipStream_t getNextStream(int device_id);
 
+    // Only possible before the first stream is created.
+    bool configure(int num_streams_per_device, int priority);
+
+    int numStreamsPerDevice();
+    int priority();
+
    private:
     bool initializeStreamsForDevice(int device_id);
 
     int num_streams_per_device_;
+    int priority_;
     std::mutex mutex_;
     std::unordered_map<int, std::vector<hipStream_t>> streams_;
     std::unordered_map<int, int> current_stream_idx_;
