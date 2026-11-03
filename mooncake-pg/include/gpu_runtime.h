@@ -96,6 +96,8 @@ class GpuStream {
     GpuStream& operator=(GpuStream&& other) noexcept;
 
     [[nodiscard]] static PGResult<GpuStream> createNonBlocking(int device);
+    [[nodiscard]] static PGResult<GpuStream> createNonBlockingLowPriority(
+        int device);
     [[nodiscard]] static GpuStream borrow(cudaStream_t stream, int device);
 
     [[nodiscard]] cudaStream_t get() const noexcept { return stream_; }

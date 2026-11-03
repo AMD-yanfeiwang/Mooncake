@@ -154,8 +154,14 @@ MooncakeWorker::MooncakeWorker(int cuda_device_index)
 
     if (cuda_device_index_ >= 0) {
         for (auto& enqueue_stream : enqueue_streams_) {
+#ifdef USE_HIP
+            // See isolateHipCopyStreams() in mooncake_communicator.cpp.
+            auto stream_result =
+                GpuStream::createNonBlockingLowPriority(cuda_device_index_);
+#else
             auto stream_result =
                 GpuStream::createNonBlocking(cuda_device_index_);
+#endif
             PG_ASSERT(stream_result.has_value(),
                       "create CUDA worker enqueue stream failed: ",
                       stream_result.error().message);

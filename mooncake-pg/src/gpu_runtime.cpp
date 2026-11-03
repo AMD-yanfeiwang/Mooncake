@@ -83,6 +83,18 @@ PGResult<GpuStream> GpuStream::createNonBlocking(int device) {
     return GpuStream(stream, device, true);
 }
 
+PGResult<GpuStream> GpuStream::createNonBlockingLowPriority(int device) {
+    PG_TRY(auto device_guard, GpuDeviceGuard::create(device));
+    int least_priority = 0;
+    int greatest_priority = 0;
+    PG_TRY_CUDA(
+        cudaDeviceGetStreamPriorityRange(&least_priority, &greatest_priority));
+    cudaStream_t stream = nullptr;
+    PG_TRY_CUDA(cudaStreamCreateWithPriority(&stream, cudaStreamNonBlocking,
+                                             least_priority));
+    return GpuStream(stream, device, true);
+}
+
 GpuStream GpuStream::borrow(cudaStream_t stream, int device) {
     PG_ASSERT(device >= 0, "invalid CUDA device index");
     return GpuStream(stream, device, false);

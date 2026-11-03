@@ -8,6 +8,8 @@
 
 #ifdef __MUSA__
 #include <musa_bf16.h>
+#elif defined(__HIPCC__)
+#include <hip/hip_bf16.h>
 #else
 #include <cuda_bf16.h>
 #endif
@@ -15,6 +17,12 @@
 #include "error_types.h"
 
 namespace mooncake {
+
+#if defined(__HIPCC__)
+using pg_bf16_t = __hip_bfloat16;
+#elif !defined(__MUSA__)
+using pg_bf16_t = __nv_bfloat16;
+#endif
 
 __global__ void enqueueTaskKernel(int opType, size_t dataSize,
                                   int64_t broadcastRoot, int bufferOffset,
@@ -191,8 +199,8 @@ void launchReduceKernel_bf16(void* dst, const void* src, size_t numElements,
                                          (const mt_bfloat16*)src, numElements,
                                          numRanks, op, activeRanks);
 #else
-    reduceKernel<<<64, 256, 0, stream>>>((__nv_bfloat16*)dst,
-                                         (const __nv_bfloat16*)src, numElements,
+    reduceKernel<<<64, 256, 0, stream>>>((pg_bf16_t*)dst,
+                                         (const pg_bf16_t*)src, numElements,
                                          numRanks, op, activeRanks);
 #endif
 }
@@ -226,7 +234,7 @@ void preloadReduceKernels() {
     preload("reduceKernel<bool>",
             reinterpret_cast<const void*>(reduceKernel<bool>));
     preload("reduceKernel<BFloat16>",
-            reinterpret_cast<const void*>(reduceKernel<__nv_bfloat16>));
+            reinterpret_cast<const void*>(reduceKernel<pg_bf16_t>));
 #endif
 }
 

@@ -30,7 +30,7 @@ __global__
 };
 
 // Kernel function declarations — guarded so g++ doesn't see __global__
-#if defined(__CUDACC__) || defined(__MUSA__)
+#if defined(__CUDACC__) || defined(__MUSA__) || defined(__HIPCC__)
 __global__ void enqueueTaskKernel(int opType, size_t dataSize,
                                   int64_t broadcastRoot, int bufferOffset,
                                   uint64_t submitSequence,

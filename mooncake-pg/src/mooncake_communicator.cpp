@@ -17,6 +17,9 @@
 #include "gpu_runtime.h"
 #include "memory_location.h"
 #include "pg_host_ip_resolve.h"
+#ifdef USE_HIP
+#include "transport/hip_transport/hip_transport.h"
+#endif
 #if MOONCAKE_PG_HAS_COLLECTIVE_V2
 #include "device_comm/device_collective/device_collective.h"
 #include "device_comm/device_collective/device_collective_workspace.h"
@@ -29,6 +32,47 @@ namespace {
 // A non-zero operation size is required to ensure that the worker creates a
 // task for the barrier.
 constexpr size_t kBarrierDummySize = 1;
+
+#ifdef USE_HIP
+// The resident enqueue kernel blocks its hardware queue until the host
+// completes the task, and HIP shares GPU_MAX_HW_QUEUES (default 4) queues
+// among streams of one priority. Keep the enqueue streams and this engine's
+// HIP copy streams alone in the lowest-priority pool so a copy the host waits
+// for never queues behind the kernel.
+PGResult<void> isolateHipCopyStreams(TransferEngine& engine, bool owned) {
+    auto* hip = dynamic_cast<HipTransport*>(engine.getTransport("hip"));
+    if (hip == nullptr) return {};
+
+    int max_hw_queues = 4;
+    if (const char* env = std::getenv("GPU_MAX_HW_QUEUES")) {
+        max_hw_queues = std::atoi(env);
+    }
+    const int enqueue_streams =
+        static_cast<int>(MooncakeWorker::numEnqueueStreams());
+    const int copy_streams = max_hw_queues - enqueue_streams;
+    PG_VALIDATE_ARG(copy_streams >= 1,
+                    "GPU_MAX_HW_QUEUES=" + std::to_string(max_hw_queues) +
+                        " is too small for Mooncake PG on HIP; it needs at "
+                        "least " +
+                        std::to_string(enqueue_streams + 1));
+
+    int least_priority = 0;
+    int greatest_priority = 0;
+    PG_TRY_CUDA(
+        hipDeviceGetStreamPriorityRange(&least_priority, &greatest_priority));
+    if (owned && hip->configureCopyStreams(copy_streams, least_priority)) {
+        return {};
+    }
+    if (hip->copyStreamPriority() != least_priority ||
+        hip->numCopyStreams() > copy_streams) {
+        LOG(WARNING) << "[PG] HIP copy streams may share a hardware queue "
+                        "with the enqueue kernels; set "
+                        "MC_HIP_STREAM_PRIORITY=low and MC_HIP_NUM_STREAMS<="
+                     << copy_streams;
+    }
+    return {};
+}
+#endif
 
 PGResult<void> ApplyResolvedHostIp(std::string& host_ip) {
     auto resolved = MaybeResolveRoutableHostIpFromEnv(host_ip);
@@ -236,6 +280,9 @@ PGResult<void> MooncakePGContext::initialize(int rank, int world_size) {
         PG_TRY_TE(engine->init(P2PHANDSHAKE, host_ip));
         engine_initialized = true;
     }
+#ifdef USE_HIP
+    PG_TRY(isolateHipCopyStreams(*engine, engine == owned_engine.get()));
+#endif
     if (!link_manager.isInitialized()) {
         PG_TRY(link_manager.init(rank, world_size, engine));
     }

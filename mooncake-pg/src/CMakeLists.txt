@@ -16,7 +16,10 @@ if(USE_CUDA)
       "${_pg_device_source}"
       "${CMAKE_CURRENT_SOURCE_DIR}/device_comm/device_collective/algorithms/ring/ring_all_reduce.cu"
   )
-elseif(USE_MUSA OR USE_MACA)
+elseif(
+  USE_MUSA
+  OR USE_MACA
+  OR USE_HIP)
   set(_pg_device_object "${CMAKE_CURRENT_BINARY_DIR}/mooncake_worker_device.o")
   set(_pg_device_depfile "${CMAKE_CURRENT_BINARY_DIR}/mooncake_worker_device.d")
   set(_pg_device_flags
@@ -62,6 +65,17 @@ elseif(USE_MUSA OR USE_MACA)
     endif()
     set(_pg_platform_device_flags -x musa -fPIC --cuda-gpu-arch=mp_21
                                   --cuda-gpu-arch=mp_31)
+  elseif(USE_HIP)
+    set(_pg_platform_name HIP)
+    set(_pg_device_compiler_name hipcc)
+    set(_pg_device_compiler_hint /opt/rocm/bin)
+    if(NOT DEFINED MOONCAKE_HIP_ARCHS)
+      set(MOONCAKE_HIP_ARCHS gfx942 gfx950)
+    endif()
+    set(_pg_platform_device_flags -x hip -fPIC -D__HIP_PLATFORM_AMD__)
+    foreach(_pg_hip_arch IN LISTS MOONCAKE_HIP_ARCHS)
+      list(APPEND _pg_platform_device_flags "--offload-arch=${_pg_hip_arch}")
+    endforeach()
   elseif(USE_MACA)
     set(_pg_platform_name MACA)
     set(_pg_device_compiler_name nvcc)
@@ -95,7 +109,8 @@ elseif(USE_MUSA OR USE_MACA)
 else()
   message(
     FATAL_ERROR
-      "Mooncake PG currently requires one of USE_CUDA, USE_MUSA, or USE_MACA")
+      "Mooncake PG currently requires one of USE_CUDA, USE_MUSA, USE_MACA, or USE_HIP"
+  )
 endif()
 
 # Keep the GPU fatbin out of the host core so auditwheel can safely repair the
@@ -121,6 +136,9 @@ if(USE_CUDA)
 elseif(USE_MUSA)
   set_target_properties(mooncake_pg_device PROPERTIES LINKER_LANGUAGE CXX)
   target_link_libraries(mooncake_pg_device PRIVATE musa musart rt)
+elseif(USE_HIP)
+  set_target_properties(mooncake_pg_device PROPERTIES LINKER_LANGUAGE CXX)
+  target_link_libraries(mooncake_pg_device PRIVATE hip::host)
 elseif(USE_MACA)
   if(NOT DEFINED MACA_RUNTIME_LIBS)
     set(MACA_RUNTIME_LIBS mcruntime mxc-runtime64 rt)

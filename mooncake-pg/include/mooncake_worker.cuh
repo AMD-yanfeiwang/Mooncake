@@ -124,6 +124,8 @@ class MooncakeWorker {
     explicit MooncakeWorker(int cuda_device_index = -1);
     ~MooncakeWorker();
 
+    static constexpr size_t numEnqueueStreams() { return kNumCudaTasks_; }
+
     std::unique_ptr<WorkCompletion> putTaskCpu(
         OpType opType, size_t dataSize, int64_t broadcastRoot,
         const std::shared_ptr<TransferGroupMeta>& meta,

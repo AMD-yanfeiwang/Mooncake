@@ -226,8 +226,11 @@ elseif(WITH_EP)
       message(STATUS "Detected CUDA version: ${CUDAToolkit_VERSION}")
     endif()
 
-    add_subdirectory(mooncake-ep)
-    include_directories(mooncake-ep/include)
+    # Mooncake EP is not ported to HIP; only Mooncake PG is built.
+    if(NOT USE_HIP)
+      add_subdirectory(mooncake-ep)
+      include_directories(mooncake-ep/include)
+    endif()
 
     # Keep generated Torch extensions and device libraries in backend-owned
     # build directories. The legacy release path injects the staged device

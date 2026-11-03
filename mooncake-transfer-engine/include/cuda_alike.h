@@ -6,6 +6,7 @@
 #include "cuda_fabric_compat.h"
 #elif defined(USE_HIP)
 #include "gpu_vendor/hip.h"
+#include "gpu_vendor/hip_cuda_compat.h"
 #elif defined(USE_MUSA)
 #include "gpu_vendor/musa.h"
 #elif defined(USE_MLU)
